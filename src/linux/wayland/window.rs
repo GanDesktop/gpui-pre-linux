@@ -1,3 +1,4 @@
+use wayland_protocols::xdg::foreign::zv2::client::zxdg_imported_v2::ZxdgImportedV2;
 use std::{
     cell::{Cell, Ref, RefCell, RefMut},
     ffi::c_void,
@@ -101,6 +102,7 @@ struct InProgressConfigure {
 }
 
 pub struct WaylandWindowState {
+    external_parent: Option<ZxdgImportedV2>,
     surface_state: WaylandSurfaceState,
     parent: Option<WaylandWindowStatePtr>,
     /// Child surfaces mapped to whether they block this window's input (dialogs
@@ -608,6 +610,7 @@ impl WaylandWindowState {
         }
 
         Ok(Self {
+            external_parent: None,
             surface_state,
             parent,
             children: FxHashMap::default(),
@@ -774,6 +777,8 @@ pub enum ImeInput {
 
 impl Drop for WaylandWindow {
     fn drop(&mut self) {
+        if let Some(imported) = self.borrow_mut().external_parent.take() { imported.destroy(); }
+
         self.0.frame_loop.set(FrameLoop::Parked);
 
         let mut state = self.0.state.borrow_mut();
@@ -1862,6 +1867,26 @@ impl PlatformWindow for WaylandWindow {
         _answers: &[PromptButton],
     ) -> Option<Receiver<usize>> {
         None
+    }
+
+    fn set_external_parent(&self, parent: &str) -> anyhow::Result<()> {
+        let handle = parent.strip_prefix("wayland:").filter(|handle| !handle.is_empty())
+            .ok_or_else(|| anyhow::anyhow!("expected a Wayland parent identifier"))?;
+        let mut state = self.borrow_mut();
+        let importer = state.globals.foreign_importer.as_ref()
+            .ok_or_else(|| anyhow::anyhow!("compositor does not expose xdg-foreign-v2"))?;
+        let imported = importer.import_toplevel(handle.to_owned(), &state.globals.qh, ());
+        imported.set_parent_of(&state.surface);
+        if let Some(previous) = state.external_parent.replace(imported) { previous.destroy(); }
+        Ok(())
+    }
+
+    fn activate_with_token(&self, token: &str) -> anyhow::Result<()> {
+        let state = self.borrow();
+        let activation = state.globals.activation.as_ref()
+            .ok_or_else(|| anyhow::anyhow!("compositor does not expose xdg-activation-v1"))?;
+        activation.activate(token.to_owned(), &state.surface);
+        Ok(())
     }
 
     fn activate(&self) {
