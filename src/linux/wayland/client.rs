@@ -1,3 +1,4 @@
+use wayland_protocols::xdg::foreign::zv2::client::{zxdg_importer_v2, zxdg_imported_v2};
 use std::{
     cell::{RefCell, RefMut},
     hash::Hash,
@@ -239,6 +240,7 @@ pub(crate) fn take_wayland_socket_from_environment() -> Option<UnixStream> {
 #[derive(Clone)]
 pub struct Globals {
     pub qh: QueueHandle<WaylandClientStatePtr>,
+    pub foreign_importer: Option<zxdg_importer_v2::ZxdgImporterV2>,
     pub activation: Option<xdg_activation_v1::XdgActivationV1>,
     pub compositor: wl_compositor::WlCompositor,
     pub cursor_shape_manager: Option<wp_cursor_shape_manager_v1::WpCursorShapeManagerV1>,
@@ -272,6 +274,7 @@ impl Globals {
     ) -> anyhow::Result<Self> {
         let dialog_v = XdgWmDialogV1::interface().version;
         Ok(Globals {
+            foreign_importer: globals.bind(&qh, 1..=1, ()).ok(),
             activation: globals.bind(&qh, 1..=1, ()).ok(),
             compositor: globals
                 .bind(
@@ -3477,5 +3480,15 @@ mod tests {
             text_input.cursor_rectangles.borrow().as_slice(),
             &[(10, 20, 1, 18)]
         );
+    }
+}
+
+// Imported parents can disappear independently of this client.
+delegate_noop!(WaylandClientStatePtr: ignore zxdg_importer_v2::ZxdgImporterV2);
+impl Dispatch<zxdg_imported_v2::ZxdgImportedV2, ()> for WaylandClientStatePtr {
+    fn event(_state: &mut Self, _proxy: &zxdg_imported_v2::ZxdgImportedV2, event: zxdg_imported_v2::Event, _: &(), _: &Connection, _: &QueueHandle<Self>) {
+        if matches!(event, zxdg_imported_v2::Event::Destroyed) {
+            log::warn!("external parent window is no longer available");
+        }
     }
 }
